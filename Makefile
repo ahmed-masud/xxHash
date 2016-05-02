@@ -21,13 +21,21 @@
 # You can contact the author at :
 #  - xxHash source repository : http://code.google.com/p/xxhash/
 # ################################################################
-# xxhsum : provides 32/64 bits hash of a file, or piped data
+# xxhsum : provides 32/64 bits hash of one or multiple files, or stdin
 # ################################################################
 
-CFLAGS ?= -O3
-CFLAGS += -std=c99 -Wall -Wextra -Wundef -Wshadow -Wcast-qual -Wcast-align -Wstrict-prototypes -pedantic 
-FLAGS  := -I. $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(MOREFLAGS)
+# Version numbers
+LIBVER_MAJOR:=`sed -n '/define XXH_VERSION_MAJOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < xxhash.h`
+LIBVER_MINOR:=`sed -n '/define XXH_VERSION_MINOR/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < xxhash.h`
+LIBVER_PATCH:=`sed -n '/define XXH_VERSION_RELEASE/s/.*[[:blank:]]\([0-9][0-9]*\).*/\1/p' < xxhash.h`
+LIBVER := $(LIBVER_MAJOR).$(LIBVER_MINOR).$(LIBVER_PATCH)
 
+CFLAGS ?= -O3
+CFLAGS += -std=c99 -Wall -Wextra -Wshadow -Wcast-qual -Wcast-align -Wstrict-prototypes -Wstrict-aliasing=1 -Wswitch-enum -Wundef -pedantic 
+FLAGS  := $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(MOREFLAGS)
+XXHSUM_VERSION=$(LIBVER)
+MD2ROFF  =ronn
+MD2ROFF_FLAGS  = --roff --warnings --manual="User Commands" --organization="xxhsum $(XXHSUM_VERSION)"
 
 # Define *.exe as extension for Windows systems
 ifneq (,$(filter Windows%,$(OS)))
@@ -40,7 +48,7 @@ endif
 
 default: xxhsum
 
-all: xxhsum xxhsum32
+all: xxhsum xxhsum32 xxhsum_privateXXH
 
 xxhsum: xxhash.c xxhsum.c
 	$(CC)      $(FLAGS) $^ -o $@$(EXT)
@@ -50,10 +58,19 @@ xxhsum: xxhash.c xxhsum.c
 xxhsum32: xxhash.c xxhsum.c
 	$(CC) -m32 $(FLAGS) $^ -o $@$(EXT)
 
+xxhsum_privateXXH: xxhsum.c
+	$(CC) $(FLAGS) -DXXHSUM_INCLUDE_XXHC $^ -o $@$(EXT)
+
 test: clean xxhsum
+	# stdin
 	./xxhsum < xxhash.c
+	# multiple files
+	./xxhsum *
+	# internal bench
 	./xxhsum -bi1
+	# file bench
 	./xxhsum -bi1 xxhash.c
+	# memory tests
 	valgrind --leak-check=yes --error-exitcode=1 ./xxhsum -bi1 xxhash.c
 	valgrind --leak-check=yes --error-exitcode=1 ./xxhsum -H0 xxhash.c
 	valgrind --leak-check=yes --error-exitcode=1 ./xxhsum -H1 xxhash.c
@@ -61,6 +78,30 @@ test: clean xxhsum
 test32: clean xxhsum32
 	@echo ---- test 32-bits ----
 	./xxhsum32 -bi1 xxhash.c
+
+test-xxhsum-c: xxhsum
+	# xxhsum to/from pipe
+	./xxhsum * | ./xxhsum -c -
+	./xxhsum -H0 * | ./xxhsum -c -
+	# xxhsum to/from file, shell redirection
+	./xxhsum * > .test.xxh64
+	./xxhsum -H0 * > .test.xxh32
+	./xxhsum -c .test.xxh64
+	./xxhsum -c .test.xxh32
+	./xxhsum -c < .test.xxh64
+	./xxhsum -c < .test.xxh32
+	# xxhsum -c warns improperly format lines.
+	cat .test.xxh64 .test.xxh32 | ./xxhsum -c -
+	cat .test.xxh32 .test.xxh64 | ./xxhsum -c -
+	# Expects "FAILED"
+	echo "0000000000000000  LICENSE" | ./xxhsum -c -; test $$? -eq 1
+	echo "00000000  LICENSE" | ./xxhsum -c -; test $$? -eq 1
+	# Expects "FAILED open or read"
+	echo "0000000000000000  test-expects-file-not-found" | ./xxhsum -c -; test $$? -eq 1
+	echo "00000000  test-expects-file-not-found" | ./xxhsum -c -; test $$? -eq 1
+
+clean-xxhsum-c:
+	@rm -f .test.xxh32 .test.xxh64
 
 armtest: clean
 	@echo ---- test ARM compilation ----
@@ -80,12 +121,23 @@ sanitize: clean
 
 staticAnalyze: clean
 	@echo ---- static analyzer - scan-build ----
-	scan-build --status-bugs -v $(MAKE) all MOREFLAGS=-g
+	CFLAGS="-g -Werror" scan-build --status-bugs -v $(MAKE) all
 
-test-all: test test32 armtest clangtest gpptest sanitize staticAnalyze
+xxhsum.1: xxhsum.1.md
+	cat $^ | $(MD2ROFF) $(MD2ROFF_FLAGS) | sed -n '/^\.\\\".*/!p' > $@
 
-clean:
-	@rm -f core *.o xxhsum$(EXT) xxhsum32$(EXT) xxh32sum xxh64sum
+man: xxhsum.1
+
+clean-man:
+	rm xxhsum.1
+
+preview-man: clean-man man
+	man ./xxhsum.1
+
+test-all: clean all test test32 test-xxhsum-c clean-xxhsum-c armtest clangtest gpptest sanitize staticAnalyze
+
+clean: clean-xxhsum-c
+	@rm -f core *.o xxhsum$(EXT) xxhsum32$(EXT) xxhsum_privateXXH$(EXT) xxh32sum xxh64sum
 	@echo cleaning completed
 
 
